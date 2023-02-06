@@ -104,7 +104,7 @@ sub list_recent_threads {
 			my $currentUts = time::current_timestamp();
 
 			# Reposting the thread if more recent than a day old.
-			if ($threadUts + 106400 > $currentUts) {
+			if ($threadUts + 86400 > $currentUts) {
 
 				# If the post is recent, reposting it on Telegram channels.
 				for my $telegramChannelId (@telegramChannels) {
