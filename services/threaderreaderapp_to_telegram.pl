@@ -28,32 +28,36 @@ use time;
 use json_parsing;
 
 # Initiates Telegram API.
-my $telegramToken    = $config{'telegramToken'} // die;
-my @telegramChannels = ('1001697735147'); # Channels on which you want to broadcast. Bot must be invited as admin in these channels.
-my $telegramApi = WWW::Telegram::BotAPI->new (
+my $fullArchiveChecked  = 0;
+my $telegramToken       = $config{'telegramToken'} // die;
+my @telegramChannels    = ('1001697735147'); # Channels on which you want to broadcast. Bot must be invited as admin in these channels.
+my $telegramApi         = WWW::Telegram::BotAPI->new (
     token => $telegramToken
 );
-my $telegramBotName  = $telegramApi->getMe->{result}{username};
-my $dt               = time::current_datetime();
+my $telegramBotName     = $telegramApi->getMe->{result}{username};
+my $dt                  = time::current_datetime();
 say "[$dt] - Initiated Telegram Bot [$telegramBotName]";
 
 # UA used to fetch data from threadreaderapp.
-my $cookie           = HTTP::Cookies->new();
-my $userAgent        = 'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36';
-my $ua               = LWP::UserAgent->new
+my $cookie              = HTTP::Cookies->new();
+my $userAgent           = 'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36';
+my $ua                  = LWP::UserAgent->new
 (
     timeout    => 30,
     cookie_jar => $cookie,
     agent      => $userAgent
 );
-my $urlBase          = 'https://threadreaderapp.com';
-my $url              = "$urlBase/user/Jikkyleaks";
-my %threads          = ();
+my $urlBase             = 'https://threadreaderapp.com';
+my $url                 = "$urlBase/user/Jikkyleaks";
+my %threads             = ();
 if (-f $threadsFile) {
+	$fullArchiveChecked = 1;
 	known_threads();
 }
 
-my %urlsReplacement  = ();
+my %urlsReplacement     = ();
+my $latestUts;
+my $initiated = 0;
 
 while (1) {
     my $dt    = time::current_datetime();
@@ -87,50 +91,89 @@ sub list_recent_threads {
 	$tree->parse($content);
 
 	# Fetching the listed threads URLs.
-	my $initiated = 0;
 	my @divs = $tree->find('div');
 	for my $div (@divs) {
 		next unless $div->attr_get_i('data-link-href');
 		my $href = $div->attr_get_i('data-link-href');
 		next unless $href && $href =~ /\Q\/thread\/\E/;
-		my ($threadId) = $href =~ /\/thread\/(.*)\.html/;
-		unless (exists $threads{$threadId}->{'detected'}) {
-			if ($initiated == 0) {
-				$initiated = 1;
-				say "";
+		parse_thread($href, $div);
+	}
+
+	if ($latestUts && !$fullArchiveChecked) {
+		my $formerUts       = '9999999999';
+		while ($formerUts > $latestUts) {
+			$formerUts = $latestUts;
+			my $url    = "https://threadreaderapp.com/user/Jikkyleaks?ajax=true&before=$latestUts";
+	    	say "[$dt] - Archiving Past Threads: [$url]";
+			my $res    = $ua->get($url);
+			unless ($res->is_success)
+			{
+			    my $dt    = time::current_datetime();
+			    say "[$dt] - Failed to get [$url]";
+			    return;
 			}
-			my $dt = time::current_datetime();
-			say "[$dt] - Archiving Thread: [$threadId]";
-			%urlsReplacement = ();
-			$threads{$threadId}->{'detected'} = 1;
-			archive_thread($threadId);
+			my $content   = $res->decoded_content;
+			unless ($content) {
+			    my $dt    = time::current_datetime();
+			    say "[$dt] - Failed to get [$url]";
+			    return;
+			}
 
-			my $span = $div->look_down(class=>"time");
-			my $threadUts = $span->attr_get_i('data-time');
-			my $threadDt  = time::timestamp_to_datetime($threadUts);
-			my $currentUts = time::current_timestamp();
-
-			# Reposting the thread if more recent than a day old.
-			if ($threadUts + 86400 > $currentUts) {
-
-				# If the post is recent, reposting it on Telegram channels.
-				for my $telegramChannelId (@telegramChannels) {
-					my $dt = time::current_datetime();
-					say "[$dt] - Re-posting Thread: [$threadId] to Telegram Channel [$telegramChannelId]";
-		            $telegramApi->sendMessage ({
-		                chat_id => "-$telegramChannelId",
-		                text    => "$urlBase/thread/$threadId.html"
-		            });
-		            sleep 1;
-				}
+			# Incrementing the few css lines we need to keep the page read-able.
+			my $tree  = HTML::Tree->new();
+			$tree->parse($content);
+			my @divs = $tree->find('div');
+			for my $div (@divs) {
+				next unless $div->attr_get_i('data-link-href');
+				my $href = $div->attr_get_i('data-link-href');
+				next unless $href && $href =~ /\Q\/thread\/\E/;
+				parse_thread($href, $div);
 			}
 		}
+		$fullArchiveChecked = 1;	
 	}
 
 	# Dumping current threads archive.
 	open my $out, '>:utf8', $threadsFile;
 	say $out encode_json\%threads;
 	close $out;
+}
+
+sub parse_thread {
+	my ($href, $div) = @_;
+	my ($threadId)   = $href =~ /\/thread\/(.*)\.html/;
+	unless (exists $threads{$threadId}->{'detected'}) {
+		if ($initiated == 0) {
+			$initiated = 1;
+			say "";
+		}
+		my $dt = time::current_datetime();
+		say "[$dt] - Archiving Thread: [$threadId]";
+		%urlsReplacement = ();
+		$threads{$threadId}->{'detected'} = 1;
+		archive_thread($threadId);
+
+		my $span       = $div->look_down(class=>"time");
+		my $threadUts  = $span->attr_get_i('data-time');
+		my $threadDt   = time::timestamp_to_datetime($threadUts);
+		my $currentUts = time::current_timestamp();
+		$latestUts     = $threadUts;
+
+		# Reposting the thread if more recent than a day old.
+		if ($threadUts + 86400 > $currentUts) {
+
+			# If the post is recent, reposting it on Telegram channels.
+			for my $telegramChannelId (@telegramChannels) {
+				my $dt = time::current_datetime();
+				say "[$dt] - Re-posting Thread: [$threadId] to Telegram Channel [$telegramChannelId]";
+	            $telegramApi->sendMessage ({
+	                chat_id => "-$telegramChannelId",
+	                text    => "$urlBase/thread/$threadId.html"
+	            });
+	            sleep 1;
+			}
+		}
+	}
 }
 
 sub archive_thread {
@@ -193,25 +236,25 @@ sub archive_thread {
 	$tree->parse($content);
 
 	# Removing adds & bookmarks nodes.
-	my $node1 = $tree->look_down('class' => 'container top-ad pb-4');
+	my $node1 = $tree->look_down('class'  => 'container top-ad pb-4');
 	$node1->delete if $node1;
-	my $node2 = $tree->look_down('class' => 'row mb-4');
+	my $node2 = $tree->look_down('class'  => 'row mb-4');
 	$node2->delete if $node2;
-	my $node3 = $tree->look_down('class' => 'container');
+	my $node3 = $tree->look_down('class'  => 'container');
 	$node3->delete if $node3;
 	my $node4 = $tree->look_down('_tag', 'div', 'class', 'mb-2 d-flex align-items-center');
 	if ($node4) {
 	    $node4->attr(style => 'margin-top:15px;');
 	}
-	my $node5 = $tree->look_down('class' => 'container pb-5');
+	my $node5 = $tree->look_down('class'  => 'container pb-5');
 	$node5->delete if $node5;
-	my $node6 = $tree->look_down('class' => 'sharingfooter');
+	my $node6 = $tree->look_down('class'  => 'sharingfooter');
 	$node6->delete if $node6;
-	my $node7 = $tree->look_down('class' => 'overlay-no-js');
+	my $node7 = $tree->look_down('class'  => 'overlay-no-js');
 	$node7->delete if $node7;
-	my $node8 = $tree->look_down('class' => 'text-center');
+	my $node8 = $tree->look_down('class'  => 'text-center');
 	$node8->delete if $node8;
-	my $node9 = $tree->look_down('class' => 'background-blue entry-support hide-premium pd-4 hide-redundant');
+	my $node9 = $tree->look_down('class'  => 'background-blue entry-support hide-premium pd-4 hide-redundant');
 	$node9->delete if $node9;
 	my $node10 = $tree->look_down('class' => 'container');
 	$node10->delete if $node10;
