@@ -56,6 +56,8 @@ if (-f $threadsFile) {
 my %urlsReplacement  = ();
 
 while (1) {
+    my $dt    = time::current_datetime();
+    STDOUT->printflush("\r[$dt] - Monitoring [$url]");
 	list_recent_threads();
 }
 
@@ -85,6 +87,7 @@ sub list_recent_threads {
 	$tree->parse($content);
 
 	# Fetching the listed threads URLs.
+	my $initiated = 0;
 	my @divs = $tree->find('div');
 	for my $div (@divs) {
 		next unless $div->attr_get_i('data-link-href');
@@ -92,6 +95,10 @@ sub list_recent_threads {
 		next unless $href && $href =~ /\Q\/thread\/\E/;
 		my ($threadId) = $href =~ /\/thread\/(.*)\.html/;
 		unless (exists $threads{$threadId}->{'detected'}) {
+			if ($initiated == 0) {
+				$initiated = 1;
+				say "";
+			}
 			my $dt = time::current_datetime();
 			say "[$dt] - Archiving Thread: [$threadId]";
 			%urlsReplacement = ();
